@@ -36,7 +36,7 @@ def install_hook(root: Path) -> bool:
 if [ "$SKIP_GUARDIAN" = "1" ]; then
     exit 0
 fi
-"{sys.executable}" "{root / 'scripts' / 'pre_push.py'}"
+"{sys.executable}" "{root / 'scripts' / 'pre_push.py'}" "$@"
 """
         target_hook.write_text(script, encoding="utf-8")
     else:

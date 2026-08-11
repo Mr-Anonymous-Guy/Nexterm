@@ -60,6 +60,9 @@ class PrePushReport:
     commit: str
     total_duration: float = 0.0
     bypassed: bool = False
+    remote_name: str = ""
+    remote_url: str = ""
+    ref_specs: list[str] = field(default_factory=list)
     stages: list[StageResult] = field(default_factory=list)
 
     @property
@@ -198,7 +201,7 @@ class PrePushValidationEngine:
                     if fpath.exists():
                         txt = fpath.read_text(encoding="utf-8").replace("\t", "    ")
                         fpath.write_text(txt, encoding="utf-8")
-                return True, "Formatting check passed (auto-repaired tab indentations).", unformatted_files, False, ""
+                return False, f"Formatting check auto-repaired {len(unformatted_files)} file(s).", unformatted_files[:5], False, "Review and stage/commit auto-formatted files (`git add . && git commit`), then run `git push` again."
             return False, f"Formatting check failed on {len(unformatted_files)} file(s).", unformatted_files[:5], False, "Run formatter or remove tab indentations"
 
         return True, "Formatting check passed. 0 formatting issues detected.", [], False, ""
@@ -251,7 +254,7 @@ class PrePushValidationEngine:
     def _stage7_test_suite(self) -> tuple[bool, str, list[str], bool, str]:
         try:
             res = subprocess.run(
-                [sys.executable, "-m", "pytest", "-q", "-k", "not TestReleaseValidator and not TestGuardianEngine and not TestPrePushEngine"],
+                [sys.executable, "-m", "pytest", "-q", "-k", "not TestReleaseValidator and not TestGuardianEngine and not TestPrePushEngine and not TestRealGitPushIntegration"],
                 cwd=self.repo_root,
                 capture_output=True,
                 text=True,
@@ -391,7 +394,12 @@ class PrePushValidationEngine:
 
         return True, "Final gate approved. All 16 validation stages passed.", [], False, ""
 
-    def run_full_pipeline(self) -> PrePushReport:
+    def run_full_pipeline(
+        self,
+        remote_name: str = "",
+        remote_url: str = "",
+        ref_specs: list[str] | None = None,
+    ) -> PrePushReport:
         """Run all 16 pre-push validation stages."""
         bypassed = os.environ.get("SKIP_GUARDIAN") == "1"
         start_all = time.time()
@@ -408,7 +416,15 @@ class PrePushValidationEngine:
         except Exception:
             pass
 
-        report = PrePushReport(version=__version__, branch=branch, commit=commit, bypassed=bypassed)
+        report = PrePushReport(
+            version=__version__,
+            branch=branch,
+            commit=commit,
+            bypassed=bypassed,
+            remote_name=remote_name,
+            remote_url=remote_url,
+            ref_specs=ref_specs or [],
+        )
 
         stage_funcs = [
             (1, "Repository Audit", self._stage1_repo_audit),
@@ -453,6 +469,7 @@ def write_markdown_report(report: PrePushReport, output_path: Path | str) -> Non
     lines.append(f"- **Version**: `v{report.version}`")
     lines.append(f"- **Active Branch**: `{report.branch}`")
     lines.append(f"- **HEAD Commit**: `{report.commit}`")
+    lines.append(f"- **Remote**: `{report.remote_name or 'origin'}` ({report.remote_url or 'N/A'})")
     lines.append(f"- **Total Duration**: `{report.total_duration:.2f}s`")
     lines.append(f"- **Overall Status**: `{'PASS' if report.all_passed else 'FAIL'}`")
     lines.append("")
@@ -484,43 +501,123 @@ def write_markdown_report(report: PrePushReport, output_path: Path | str) -> Non
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def format_terminal_summary(report: PrePushReport) -> str:
+def format_terminal_summary(report: PrePushReport, report_path: Path | str | None = None) -> str:
     """Format clean ASCII terminal UI report."""
     lines = []
-    lines.append("\n============================================================")
-    lines.append(f"   DeveloperOS Mandatory 16-Stage Pre-Push Gate (v{report.version})")
-    lines.append("============================================================\n")
+    sep = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    lines.append(sep)
+    lines.append("                 NEXTERM PRE-PUSH GUARDIAN")
+    lines.append(sep)
+    lines.append("")
 
-    lines.append(f"  Branch: {report.branch}  |  HEAD: {report.commit}  |  Elapsed: {report.total_duration:.2f}s\n")
+    if report.bypassed:
+        lines.append("[WARNING] Guardian bypass active.")
+        lines.append("Pre-push validation was skipped.\n")
+        return "\n".join(lines)
 
-    lines.append("  STAGE  STAGE NAME                     STATUS   DURATION")
-    lines.append("  -----  -----------------------------  -------  --------")
+    remote_disp = report.remote_name or "origin"
+    if report.remote_url:
+        remote_disp += f" ({report.remote_url})"
+
+    lines.append(f"  Branch     : {report.branch}")
+    lines.append(f"  Commit     : {report.commit}")
+    lines.append(f"  Remote     : {remote_disp}")
+    lines.append("")
+    lines.append("  Running validation...")
+    lines.append("")
 
     for s in report.stages:
-        st_color = "[OK]" if s.passed else ("" if s.skipped else "[FAIL]")
-        lines.append(f"   {s.stage_num:>2}    {s.name:<29}  {st_color:<7}  {s.duration:>5.2f}s")
+        if s.passed:
+            status_str = "✓ PASS"
+        elif s.skipped:
+            status_str = "  SKIP"
+        else:
+            status_str = "✗ FAIL"
+        
+        lines.append(f"  [{s.stage_num:02d}/16] {s.name:<29} {status_str:<7} {s.duration:>5.2f}s")
 
-    lines.append("\n------------------------------------------------------------")
+    lines.append("")
+    lines.append(sep)
+
     if report.all_passed:
-        lines.append("  [SUCCESS] All 16 validation stages passed. Git push authorized.")
+        lines.append("                  ✓ PUSH AUTHORIZED")
+        lines.append(sep)
+        lines.append("")
+        lines.append("  All Guardian validation stages passed.")
+        lines.append("  Continuing git push...")
     else:
-        lines.append("  [BLOCKED] Pre-push gate rejected. Git push blocked.")
-        lines.append("            Report written to `pre_push_report.md`.")
-    lines.append("------------------------------------------------------------\n")
+        lines.append("                    PUSH BLOCKED")
+        lines.append(sep)
+        lines.append("")
+        
+        failed_stages = [s for s in report.stages if not (s.passed or s.skipped)]
+        if failed_stages:
+            first_failed = failed_stages[0]
+            lines.append("  Failed Stage:")
+            lines.append(f"    {first_failed.stage_num:02d} — {first_failed.name}")
+            lines.append("")
+            lines.append("  Problem:")
+            lines.append(f"    {first_failed.message}")
+            if first_failed.details:
+                for d in first_failed.details[:5]:
+                    lines.append(f"    {d}")
+            lines.append("")
+            if first_failed.remedy:
+                lines.append("  Suggested Remedy:")
+                lines.append(f"    {first_failed.remedy}")
+                lines.append("")
+
+        lines.append("  Git push has been cancelled.")
+        if report_path:
+            lines.append("")
+            lines.append("  Report:")
+            lines.append(f"    {report_path}")
+
+        lines.append("")
+        lines.append(sep)
 
     return "\n".join(lines)
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     if os.environ.get("SKIP_GUARDIAN") == "1":
-        print("[GUARDIAN NOTICE] SKIP_GUARDIAN=1 active. Pre-push gate bypassed.")
+        report = PrePushReport(version=__version__, branch="unknown", commit="unknown", bypassed=True)
+        print(format_terminal_summary(report))
         sys.exit(0)
 
-    engine = PrePushValidationEngine(repo_root)
-    report = engine.run_full_pipeline()
+    remote_name = sys.argv[1] if len(sys.argv) > 1 else ""
+    remote_url = sys.argv[2] if len(sys.argv) > 2 else ""
 
-    print(format_terminal_summary(report))
-    write_markdown_report(report, repo_root / "pre_push_report.md")
+    ref_specs = []
+    if not sys.stdin.isatty():
+        try:
+            import select
+            if hasattr(select, "select"):
+                r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if r:
+                    ref_specs = [l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
+            else:
+                ref_specs = [l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
+        except Exception:
+            pass
+
+    engine = PrePushValidationEngine(repo_root)
+    report = engine.run_full_pipeline(remote_name=remote_name, remote_url=remote_url, ref_specs=ref_specs)
+
+    report_path = repo_root / "pre_push_report.md"
+    print(format_terminal_summary(report, report_path=report_path))
+    write_markdown_report(report, report_path)
 
     if report.all_passed:
         sys.exit(0)
@@ -530,3 +627,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

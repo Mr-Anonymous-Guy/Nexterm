@@ -11,6 +11,9 @@ echo ""
 echo "NexTerm Pre-Push Integrity Guard"
 echo "================================"
 
+export PYTHONIOENCODING=utf-8
+export PYTHONUTF8=1
+
 PYTHON_EXEC="python"
 if [ -f "venv/Scripts/python.exe" ]; then
     PYTHON_EXEC="venv/Scripts/python.exe"
@@ -22,16 +25,7 @@ elif [ -f ".venv/bin/python" ]; then
     PYTHON_EXEC=".venv/bin/python"
 fi
 
-"$PYTHON_EXEC" "scripts/pre_push.py"
+"$PYTHON_EXEC" "scripts/pre_push.py" "$@"
 EXIT_CODE=$?
 
-if [ $EXIT_CODE -ne 0 ]; then
-    echo ""
-    echo "[GUARDIAN BLOCK] Push rejected by NexTerm Pre-Push Gate."
-    echo "[GUARDIAN TIP] Check pre_push_report.md or pass SKIP_GUARDIAN=1 git push to bypass."
-    exit $EXIT_CODE
-fi
-
-echo ""
-echo "Integrity & Pre-Push Validation passed."
-exit 0
+exit $EXIT_CODE
