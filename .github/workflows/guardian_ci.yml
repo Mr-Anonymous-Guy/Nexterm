@@ -1,0 +1,45 @@
+name: DeveloperOS Guardian CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  guardian-verification:
+    name: Guardian Verification (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .[dev]
+
+      - name: Run NexTerm Integrity Check
+        run: |
+          python scripts/nexterm_integrity_check.py
+
+      - name: Run Guardian Verification Engine
+        run: |
+          python scripts/pre_push_guardian.py
+
+      - name: Build Package & Twine Metadata Check
+        run: |
+          python -m build
+          python -m twine check dist/*
