@@ -5,6 +5,17 @@ All notable changes to DeveloperOS (`Work_SpaceX`) will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-08-11
+
+### Added
+- **Mandatory Pre-Push Guardian Gate**:
+  - Integrated 16-stage validation pipeline (`PrePushValidationEngine`) into local Git `pre-push` hook.
+  - Interactive terminal UX dashboard displaying real-time stage progress (`[01/16]`), execution durations, pass/fail indicators (`✓ PASS` / `✗ FAIL`), and authorization status.
+  - Actionable error diagnostics detailing failed stage, root cause problem, remedy, and `pre_push_report.md` generation.
+  - Stdin refspec and argument forwarding (`"$@"`) for `git push`.
+  - Windows console UTF-8 stream re-configuration to prevent encoding failures.
+  - Version alignment to `0.1.3` across codebase, metadata, and test assertions.
+
 ## [0.1.1] - 2026-08-08
 
 ### Added
