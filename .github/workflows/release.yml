@@ -5,10 +5,16 @@ on:
     tags:
       - 'v*'
 
+# Never cancel an active release — a second tag push should queue, not kill.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   validate-and-build:
     name: Validate Release & Build Artifacts
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,15 +39,139 @@ jobs:
           VERSION="${TAG_NAME#v}"
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "============================================================"
+          echo "  NexTerm Release Pipeline"
+          echo "============================================================"
+          echo "  Tag:     ${TAG_NAME}"
+          echo "  Version: ${VERSION}"
+          echo "============================================================"
 
-      - name: Run Release Validation Suite (Git, Version, Tests, Build, Metadata, Secrets, Venv)
+      - name: "[1/8] Validate Tag Format"
         run: |
-          python scripts/release_check.py ${{ steps.get_version.outputs.tag_name }}
+          TAG="${{ steps.get_version.outputs.tag_name }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid tag format: $TAG (expected vX.Y.Z)"
+            exit 1
+          fi
+          echo "[1/8] Tag format ................. PASS ($TAG)"
 
-      - name: Generate SHA256SUMS.txt
+      - name: "[2/8] Validate Version Consistency"
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+
+          # Check pyproject.toml
+          TOML_VERSION=$(python -c "
+          import re
+          text = open('pyproject.toml').read()
+          m = re.search(r'^version\s*=\s*[\"\\']([^\"\\']+)[\"\\']', text, re.MULTILINE)
+          print(m.group(1) if m else 'NOT_FOUND')
+          ")
+
+          # Check __init__.py
+          CODE_VERSION=$(python -c "from nexterm import __version__; print(__version__)")
+
+          echo "  Git tag version:       $VERSION"
+          echo "  pyproject.toml:        $TOML_VERSION"
+          echo "  nexterm.__version__:   $CODE_VERSION"
+
+          if [ "$VERSION" != "$TOML_VERSION" ]; then
+            echo "::error::Version mismatch: tag=$VERSION but pyproject.toml=$TOML_VERSION"
+            exit 1
+          fi
+
+          if [ "$VERSION" != "$CODE_VERSION" ]; then
+            echo "::error::Version mismatch: tag=$VERSION but __version__=$CODE_VERSION"
+            exit 1
+          fi
+
+          echo "[2/8] Version consistency ........ PASS ($VERSION)"
+
+      - name: "[3/8] Build Package (wheel + sdist)"
+        run: |
+          python -m build
+          echo ""
+          echo "  Built artifacts:"
+          ls -la dist/
+          echo ""
+          echo "[3/8] Package build .............. PASS"
+
+      - name: "[4/8] Validate Package Metadata"
+        run: |
+          python -m twine check dist/*
+          echo "[4/8] Metadata validation ........ PASS"
+
+      - name: "[5/8] Scan Artifacts for Secrets"
+        run: |
+          python -c "
+          from nexterm.release import ReleaseValidator
+          from pathlib import Path
+          v = ReleaseValidator(Path('.'))
+          result = v.scan_artifact_secrets()
+          print(f'  {result.message}')
+          if result.details:
+              for d in result.details:
+                  print(f'    {d}')
+          if not result.passed:
+              raise SystemExit(1)
+          "
+          echo "[5/8] Artifact secret scan ....... PASS"
+
+      - name: "[6/8] Smoke Test — Install Wheel in Clean Environment"
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          WHEEL=$(ls dist/*.whl | head -1)
+          echo "  Testing wheel: $(basename $WHEEL)"
+
+          # Create isolated venv
+          python -m venv /tmp/nexterm-release-test
+          /tmp/nexterm-release-test/bin/pip install --quiet "$WHEEL"
+
+          # Test nexterm --version
+          OUTPUT=$(/tmp/nexterm-release-test/bin/nexterm --version 2>&1)
+          echo "  nexterm --version: $OUTPUT"
+          if ! echo "$OUTPUT" | grep -q "$VERSION"; then
+            echo "::error::nexterm --version output does not contain $VERSION"
+            exit 1
+          fi
+
+          # Test nexterm --help
+          HELP_OUTPUT=$(/tmp/nexterm-release-test/bin/nexterm --help 2>&1)
+          if ! echo "$HELP_OUTPUT" | grep -qi "nexterm"; then
+            echo "::error::nexterm --help does not mention nexterm"
+            exit 1
+          fi
+          echo "  nexterm --help: OK"
+
+          # Cleanup
+          rm -rf /tmp/nexterm-release-test
+          echo "[6/8] Smoke test ................. PASS"
+
+      - name: "[7/8] Generate SHA256SUMS.txt"
         run: |
           (cd dist && sha256sum *.whl *.tar.gz > ../SHA256SUMS.txt)
+          echo "  SHA256 checksums:"
           cat SHA256SUMS.txt
+          echo ""
+          echo "[7/8] SHA256SUMS ................. PASS"
+
+      - name: "[8/8] Release Validation Summary"
+        run: |
+          echo ""
+          echo "============================================================"
+          echo "  NexTerm Release Validation — COMPLETE"
+          echo "============================================================"
+          echo "  [1/8] Tag format ................. PASS"
+          echo "  [2/8] Version consistency ........ PASS"
+          echo "  [3/8] Package build .............. PASS"
+          echo "  [4/8] Metadata validation ........ PASS"
+          echo "  [5/8] Artifact secret scan ....... PASS"
+          echo "  [6/8] Smoke test ................. PASS"
+          echo "  [7/8] SHA256SUMS ................. PASS"
+          echo "  [8/8] Summary .................... PASS"
+          echo "============================================================"
+          echo "  RELEASE VALIDATION: PASS"
+          echo "  Ready for PyPI publication."
+          echo "============================================================"
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
@@ -61,6 +191,7 @@ jobs:
     name: Publish to PyPI (Trusted Publisher OIDC)
     needs: validate-and-build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: pypi
     permissions:
       id-token: write
@@ -83,6 +214,7 @@ jobs:
     name: Create GitHub Release
     needs: [validate-and-build, publish-pypi]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: write
 

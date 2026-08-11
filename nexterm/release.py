@@ -164,6 +164,7 @@ class ReleaseValidator:
                 cwd=self.repo_root,
                 capture_output=True,
                 text=True,
+                timeout=300,
             )
             if res.returncode == 0:
                 summary = res.stdout.strip().splitlines()[-1] if res.stdout.strip() else "Tests passed."
@@ -171,6 +172,8 @@ class ReleaseValidator:
             else:
                 last_lines = res.stdout.strip().splitlines()[-10:] + res.stderr.strip().splitlines()[-10:]
                 return CheckResult("Test Suite", False, "Unit tests failed.", last_lines)
+        except subprocess.TimeoutExpired:
+            return CheckResult("Test Suite", False, "Test suite timed out after 300 seconds.")
         except Exception as e:
             return CheckResult("Test Suite", False, f"Error running tests: {e}")
 
@@ -183,6 +186,7 @@ class ReleaseValidator:
                 cwd=self.repo_root,
                 capture_output=True,
                 text=True,
+                timeout=120,
             )
             if res.returncode != 0:
                 return CheckResult("Build Packages", False, "Package build failed.", res.stderr.splitlines()[-10:]), []
@@ -212,6 +216,7 @@ class ReleaseValidator:
                 cwd=self.repo_root,
                 capture_output=True,
                 text=True,
+                timeout=30,
             )
             if res.returncode == 0:
                 return CheckResult("Metadata Check", True, "Twine metadata validation passed for all artifacts.")
@@ -286,17 +291,17 @@ class ReleaseValidator:
             temp_venv = Path(temp_dir) / "venv"
             try:
                 # 1. Create venv
-                sub_res = subprocess.run([sys.executable, "-m", "venv", str(temp_venv)], capture_output=True, text=True)
+                sub_res = subprocess.run([sys.executable, "-m", "venv", str(temp_venv)], capture_output=True, text=True, timeout=60)
                 if sub_res.returncode != 0:
                     return CheckResult("Clean Venv Test", False, f"Failed to create temporary venv: {sub_res.stderr}")
 
                 # Resolve pip/python executables inside temp venv
                 if os.name == "nt":
                     venv_python = temp_venv / "Scripts" / "python.exe"
-                    venv_workspace = temp_venv / "Scripts" / "workspace.exe"
+                    venv_nexterm = temp_venv / "Scripts" / "nexterm.exe"
                 else:
                     venv_python = temp_venv / "bin" / "python"
-                    venv_workspace = temp_venv / "bin" / "workspace"
+                    venv_nexterm = temp_venv / "bin" / "nexterm"
 
                 # 2. Pip install wheel inside temp venv
                 wheel_path = os.fspath(wheel.resolve())
@@ -305,38 +310,43 @@ class ReleaseValidator:
                     cwd=self.repo_root,
                     capture_output=True,
                     text=True,
+                    timeout=120,
                 )
                 if inst_res.returncode != 0:
                     return CheckResult("Clean Venv Test", False, f"pip install {wheel.name} failed.", inst_res.stderr.splitlines()[-10:])
 
                 details.append(f"Installed {wheel.name} into clean venv.")
 
-                # 3. Test `workspace --version`
+                # 3. Test `nexterm --version`
                 ver_res = subprocess.run(
-                    [str(venv_workspace), "--version"],
+                    [str(venv_nexterm), "--version"],
                     cwd=temp_dir,
                     capture_output=True,
                     text=True,
+                    timeout=30,
                 )
                 if ver_res.returncode != 0 or __version__ not in ver_res.stdout:
-                    return CheckResult("Clean Venv Test", False, f"workspace --version failed: {ver_res.stderr or ver_res.stdout}", details)
+                    return CheckResult("Clean Venv Test", False, f"nexterm --version failed: {ver_res.stderr or ver_res.stdout}", details)
 
-                details.append(f"workspace --version: {ver_res.stdout.strip()}")
+                details.append(f"nexterm --version: {ver_res.stdout.strip()}")
 
-                # 4. Test `workspace --help`
+                # 4. Test `nexterm --help`
                 help_res = subprocess.run(
-                    [str(venv_workspace), "--help"],
+                    [str(venv_nexterm), "--help"],
                     cwd=temp_dir,
                     capture_output=True,
                     text=True,
+                    timeout=30,
                 )
-                if help_res.returncode != 0 or "worksapce" not in help_res.stdout.lower():
-                    return CheckResult("Clean Venv Test", False, "workspace --help failed.", details)
+                if help_res.returncode != 0 or "nexterm" not in help_res.stdout.lower():
+                    return CheckResult("Clean Venv Test", False, "nexterm --help failed.", details)
 
-                details.append("workspace --help executed successfully.")
+                details.append("nexterm --help executed successfully.")
 
                 return CheckResult("Clean Venv Test", True, "Wheel installed & verified in clean isolated virtual environment.", details)
 
+            except subprocess.TimeoutExpired:
+                return CheckResult("Clean Venv Test", False, "Clean venv test timed out.", details)
             except Exception as e:
                 return CheckResult("Clean Venv Test", False, f"Clean venv test error: {e}", details)
 

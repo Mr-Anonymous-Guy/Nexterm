@@ -31,15 +31,19 @@ from nexterm.release import (
 class TestReleaseValidator(unittest.TestCase):
     """Unit tests for the ReleaseValidator subsystem."""
 
-    def setUp(self):
-        self.repo_root = Path(__file__).resolve().parent.parent
-        self.validator = ReleaseValidator(self.repo_root)
-        dist_dir = self.repo_root / "dist"
+    _full_report = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.repo_root = Path(__file__).resolve().parent.parent
+        cls.validator = ReleaseValidator(cls.repo_root)
+        dist_dir = cls.repo_root / "dist"
         if not (dist_dir.exists() and list(dist_dir.glob("*.whl")) and list(dist_dir.glob("*.tar.gz"))):
-            self.validator.build_packages()
+            cls.validator.build_packages()
+        cls._full_report = cls.validator.run_full_check()
 
     def test_version_alignment(self):
-        check = self.validator.check_version_alignment()
+        check = self.validator.check_version_alignment(target_tag=f"v{__version__}")
         self.assertTrue(check.passed)
         self.assertIn(__version__, check.message)
 
@@ -53,7 +57,10 @@ class TestReleaseValidator(unittest.TestCase):
         self.assertIsInstance(check, CheckResult)
 
     def test_run_tests(self):
-        check = self.validator.run_tests()
+        # Verify via the full report's test suite check instead of re-running pytest
+        test_checks = [c for c in self._full_report.checks if c.name == "Test Suite"]
+        self.assertTrue(len(test_checks) >= 1)
+        check = test_checks[0]
         self.assertTrue(check.passed)
         self.assertIn("passed", check.message.lower())
 
@@ -76,19 +83,22 @@ class TestReleaseValidator(unittest.TestCase):
         self.assertIn("Zero secrets", check.message)
 
     def test_clean_environment_smoke_test(self):
-        check = self.validator.clean_environment_smoke_test()
+        # Verify via the full report's smoke test check instead of re-running
+        smoke_checks = [c for c in self._full_report.checks if c.name == "Clean Venv Test"]
+        self.assertTrue(len(smoke_checks) >= 1)
+        check = smoke_checks[0]
         self.assertTrue(check.passed, msg=f"Smoke test failed: {check.message} - details: {check.details}")
         self.assertIn("installed & verified", check.message.lower())
 
     def test_full_check(self):
-        report = self.validator.run_full_check()
+        report = self._full_report
         self.assertIsInstance(report, ReleaseCheckReport)
         self.assertEqual(report.version, __version__)
         self.assertTrue(len(report.checks) >= 6)
         self.assertTrue(len(report.artifacts) >= 2)
 
     def test_format_report_terminal(self):
-        report = self.validator.run_full_check()
+        report = self._full_report
         output = format_report_terminal(report, use_color=False)
         self.assertIn("DeveloperOS Release Check", output)
         self.assertIn(__version__, output)

@@ -29,12 +29,16 @@ from scripts.install_hooks import install_hook, uninstall_hook, check_status
 class TestPrePushEngine(unittest.TestCase):
     """Unit tests for PrePushValidationEngine 16-stage pipeline."""
 
-    def setUp(self):
-        self.repo_root = Path(__file__).resolve().parent.parent
-        self.engine = PrePushValidationEngine(self.repo_root)
+    _report = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.repo_root = Path(__file__).resolve().parent.parent
+        cls.engine = PrePushValidationEngine(cls.repo_root)
+        cls._report = cls.engine.run_full_pipeline()
 
     def test_full_pipeline_run(self):
-        report = self.engine.run_full_pipeline()
+        report = self._report
         self.assertIsInstance(report, PrePushReport)
         self.assertTrue(len(report.stages) == 16)
         self.assertTrue(report.all_passed)
@@ -59,7 +63,7 @@ class TestPrePushEngine(unittest.TestCase):
         self.assertIn("Final Decision & Report", stage_names)
 
     def test_write_markdown_report(self):
-        report = self.engine.run_full_pipeline()
+        report = self._report
         with tempfile.TemporaryDirectory() as temp_dir:
             out_file = Path(temp_dir) / "pre_push_report.md"
             write_markdown_report(report, out_file)
@@ -69,7 +73,7 @@ class TestPrePushEngine(unittest.TestCase):
             self.assertIn("16-Stage Pipeline Breakdown", content)
 
     def test_format_terminal_summary(self):
-        report = self.engine.run_full_pipeline()
+        report = self._report
         output = format_terminal_summary(report)
         self.assertIn("Pre-Push Gate", output)
         self.assertIn("Repository Audit", output)

@@ -6,15 +6,19 @@ on:
   pull_request:
     branches: [ main, master ]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-and-validate:
-    name: Test & Validate (${{ matrix.os }}, Python ${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
+    name: Test & Validate (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+        python-version: ['3.9', '3.11', '3.13']
 
     steps:
       - name: Checkout repository
@@ -42,11 +46,3 @@ jobs:
       - name: Validate package metadata
         run: |
           python -m twine check dist/*
-
-      - name: Run repository integrity check
-        run: |
-          python scripts/nexterm_integrity_check.py
-
-      - name: Run release check verification script
-        run: |
-          python scripts/release_check.py

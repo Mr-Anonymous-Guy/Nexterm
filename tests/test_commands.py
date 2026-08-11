@@ -181,7 +181,7 @@ class TestLayer2NexTermCommands(unittest.TestCase):
 
     def test_release_subsystem(self):
         validator = release.ReleaseValidator(repo_root)
-        check_res = validator.check_version_alignment()
+        check_res = validator.check_version_alignment(target_tag=f"v{__version__}")
         self.assertTrue(check_res.passed)
 
     def test_preferences_memory(self):

@@ -90,7 +90,7 @@ class TestGuardianEngine(unittest.TestCase):
         report = self.engine.run_full_guardian_check()
         self.assertIsInstance(report, GuardianReport)
         self.assertEqual(report.version, __version__)
-        self.assertTrue(len(report.checks) >= 6)
+        self.assertTrue(len(report.checks) >= 4)
 
     def test_format_guardian_report_terminal(self):
         report = self.engine.run_full_guardian_check()

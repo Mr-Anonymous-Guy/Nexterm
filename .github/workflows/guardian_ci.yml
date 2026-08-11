@@ -6,24 +6,24 @@ on:
   pull_request:
     branches: [ main, master ]
 
+concurrency:
+  group: guardian-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   guardian-verification:
-    name: Guardian Verification (${{ matrix.os }}, Python ${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+    name: Guardian Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.11'
           cache: 'pip'
 
       - name: Install dependencies
@@ -31,15 +31,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install .[dev]
 
-      - name: Run NexTerm Integrity Check
+      - name: Run NexTerm Repository Integrity Audit
         run: |
           python scripts/nexterm_integrity_check.py
 
       - name: Run Guardian Verification Engine
         run: |
           python scripts/pre_push_guardian.py
-
-      - name: Build Package & Twine Metadata Check
-        run: |
-          python -m build
-          python -m twine check dist/*

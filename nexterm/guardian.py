@@ -262,7 +262,12 @@ fi
         return False
 
     def run_full_guardian_check(self) -> GuardianReport:
-        """Run full pre-push Guardian verification pipeline."""
+        """Run full pre-push Guardian verification pipeline.
+
+        Guardian is responsible for repository integrity and security checks ONLY.
+        It does NOT re-run pytest, build, twine, or venv smoke tests — those
+        belong to CI and Release pipelines respectively.
+        """
         bypassed = os.environ.get("SKIP_GUARDIAN") == "1"
         is_installed = self.check_hook_status()
 
@@ -278,15 +283,12 @@ fi
         # 4. Dependency check
         dep_check = self.validate_dependencies()
 
-        # 5. Release validator checks (version, test suite, build, metadata, artifact scan, clean venv)
-        release_report = self.release_validator.run_full_check()
-
         checks = [
             hygiene_check,
             files_check,
             secret_check,
             dep_check,
-        ] + release_report.checks
+        ]
 
         return GuardianReport(
             version=__version__,

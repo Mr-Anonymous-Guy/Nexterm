@@ -284,7 +284,10 @@ def get_project_info(conn: sqlite3.Connection, project_id: int) -> dict | None:
     if not row:
         return None
     r = dict(row[0])
-    tags_rows = conn.execute("SELECT tag FROM project_tags WHERE project_id = ?", (project_id,)).fetchall()
-    r["tags"] = [t["tag"] for t in tags_rows]
+    tags_rows = conn.execute(
+        "SELECT t.name FROM tags t JOIN project_tags pt ON pt.tag_id = t.id WHERE pt.project_id = ?",
+        (project_id,),
+    ).fetchall()
+    r["tags"] = [t["name"] for t in tags_rows]
     return r
 
