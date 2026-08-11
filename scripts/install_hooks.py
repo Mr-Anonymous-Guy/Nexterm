@@ -29,21 +29,29 @@ def install_hook(root: Path) -> bool:
     git_hooks_dir.mkdir(parents=True, exist_ok=True)
     target_hook = git_hooks_dir / "pre-push"
     source_hook = root / ".githooks" / "pre-push"
+    hook_content = f"""#!/bin/sh
+# NexTerm Mandatory Pre-Push Git Hook
+# Automatically installed via `python scripts/install_hooks.py --install`
 
-    if not source_hook.exists():
-        # Fallback inline hook script
-        script = f"""#!/bin/sh
 if [ "$SKIP_GUARDIAN" = "1" ]; then
     exit 0
 fi
+
+export PYTHONIOENCODING=utf-8
+export PYTHONUTF8=1
+
 "{sys.executable}" "{root / 'scripts' / 'pre_push.py'}" "$@"
+EXIT_CODE=$?
+exit $EXIT_CODE
 """
-        target_hook.write_text(script, encoding="utf-8")
-    else:
-        target_hook.write_text(source_hook.read_text(encoding="utf-8"), encoding="utf-8")
+
+    (root / ".githooks").mkdir(parents=True, exist_ok=True)
+    source_hook.write_text(hook_content, encoding="utf-8")
+    target_hook.write_text(hook_content, encoding="utf-8")
 
     if os.name != "nt":
         target_hook.chmod(0o755)
+        source_hook.chmod(0o755)
 
     import subprocess
     subprocess.run(["git", "config", "core.hooksPath", ".githooks"], cwd=root, capture_output=True)

@@ -3,29 +3,12 @@
 # Automatically installed via `python scripts/install_hooks.py --install`
 
 if [ "$SKIP_GUARDIAN" = "1" ]; then
-    echo "[GUARDIAN WARNING] SKIP_GUARDIAN=1 detected. Pre-push checks bypassed."
     exit 0
 fi
-
-echo ""
-echo "NexTerm Pre-Push Integrity Guard"
-echo "================================"
 
 export PYTHONIOENCODING=utf-8
 export PYTHONUTF8=1
 
-PYTHON_EXEC="python"
-if [ -f "venv/Scripts/python.exe" ]; then
-    PYTHON_EXEC="venv/Scripts/python.exe"
-elif [ -f ".venv/Scripts/python.exe" ]; then
-    PYTHON_EXEC=".venv/Scripts/python.exe"
-elif [ -f "venv/bin/python" ]; then
-    PYTHON_EXEC="venv/bin/python"
-elif [ -f ".venv/bin/python" ]; then
-    PYTHON_EXEC=".venv/bin/python"
-fi
-
-"$PYTHON_EXEC" "scripts/pre_push.py" "$@"
+"C:\Users\TUTUN\AppData\Local\Programs\Python\Python313\python.exe" "C:\Mr-Anonymous-Guy\Nexterm\scripts\pre_push.py" "$@"
 EXIT_CODE=$?
-
 exit $EXIT_CODE
