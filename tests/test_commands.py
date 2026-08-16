@@ -81,7 +81,10 @@ class TestLayer2NexTermCommands(unittest.TestCase):
         self.conn = db.connect(Path(":memory:"))
 
     def test_version_command(self):
-        self.assertEqual(__version__, "0.1.3")
+        import tomllib
+        with open(Path(__file__).resolve().parent.parent / "pyproject.toml", "rb") as f:
+            pyproject_version = tomllib.load(f)["project"]["version"]
+        self.assertEqual(__version__, pyproject_version)
 
     def test_scan_and_projects_list(self):
         tmp_dir = Path(__file__).resolve().parent / "tmp_fixture_proj"
