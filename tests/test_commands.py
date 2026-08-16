@@ -81,9 +81,11 @@ class TestLayer2NexTermCommands(unittest.TestCase):
         self.conn = db.connect(Path(":memory:"))
 
     def test_version_command(self):
-        import tomllib
-        with open(Path(__file__).resolve().parent.parent / "pyproject.toml", "rb") as f:
-            pyproject_version = tomllib.load(f)["project"]["version"]
+        import re
+        pyproject_text = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'^version\s*=\s*["\']([^"\']+)["\']', pyproject_text, re.MULTILINE)
+        self.assertIsNotNone(match)
+        pyproject_version = match.group(1)
         self.assertEqual(__version__, pyproject_version)
 
     def test_scan_and_projects_list(self):
