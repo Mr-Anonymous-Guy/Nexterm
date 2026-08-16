@@ -7,6 +7,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -393,33 +395,72 @@ def open(name, editor):
 
 # --- Start (Full Auto-Bootstrap) -------------------------------------
 @main.command()
-@click.argument("name")
+@click.argument("name", required=False, default=None)
 @click.option("--no-browser", is_flag=True, help="Skip automatic browser opening")
 def start(name, no_browser):
-    """Smart-start a project: detect -> install -> env -> services -> run -> browser.
+    """Smart-start a project: detect -> install -> env -> services -> run interactively.
 
     This is the all-in-one bootstrap command (Feature #8).
-    """
-    conn = _conn()
-    matches = search.fuzzy_find(conn, name, limit=1)
-    if not matches:
-        click.echo(f"No project matching '{name}' found.")
-        sys.exit(1)
-    project = matches[0]
-    project_dir = Path(project["path"])
-    click.echo(f"Starting '{project['name']}' at {project_dir}")
+    The application runs in the current terminal session (foreground).
+    Press Ctrl+C to stop it and return to the shell.
 
-    # 1. Check and install dependencies
+    Usage:
+        start              Start the project in the current directory
+        start <name>       Start an indexed project by name
+    """
     from . import detectors
-    facts = detectors.detect_all(project_dir)
+
+    conn = _conn()
+    project_id = None  # May remain None for CWD-based start
+
+    if name:
+        # ── Mode 2: Existing project-name lookup ─────────────────────
+        matches = search.fuzzy_find(conn, name, limit=1)
+        if not matches:
+            click.echo(f"No project matching '{name}' found.")
+            sys.exit(1)
+        project = matches[0]
+        project_dir = Path(project["path"])
+        project_id = project["id"]
+        click.echo(f"Starting '{project['name']}' at {project_dir}")
+        facts = detectors.detect_all(project_dir)
+        run_cmd = facts.get("run_cmd") or project["run_cmd"]
+    else:
+        # ── Mode 1: Current working directory ────────────────────────
+        project_dir = Path.cwd()
+        click.echo(f"Detecting project in {project_dir}...")
+        if not detectors.is_project_root(project_dir):
+            click.echo(f"  No supported project detected in {project_dir}.")
+            click.echo("  Expected one of: package.json, pyproject.toml, Cargo.toml, go.mod, etc.")
+            sys.exit(1)
+        facts = detectors.detect_all(project_dir)
+        run_cmd = facts.get("run_cmd")
+        project_name = facts.get("name") or project_dir.name
+        click.echo(f"  Detected: {project_name} ({facts.get('language') or 'unknown'})")
+        if facts.get("framework"):
+            click.echo(f"  Framework: {facts['framework']}")
+
+    # ── Shared Smart Start pipeline ──────────────────────────────────
     pm = facts.get("package_manager")
     install_cmd = facts.get("install_cmd")
+
+    # 1. Check and install dependencies (interactive — output visible in terminal)
     if pm in ("npm", "pnpm", "yarn") and (project_dir / "package.json").exists() and not (project_dir / "node_modules").exists():
-        click.echo(f"  Installing dependencies ({pm})...")
-        subprocess.run(install_cmd, shell=True, cwd=project_dir, capture_output=True)
+        click.echo(f"  Dependencies missing. Installing ({pm})...")
+        install_result = subprocess.run(install_cmd, shell=True, cwd=project_dir)
+        if install_result.returncode != 0:
+            click.echo(f"  Dependency installation failed (exit code {install_result.returncode}).")
+            sys.exit(1)
+        click.echo(f"  Dependencies installed successfully.")
     elif pm == "pip" and (project_dir / "requirements.txt").exists():
         click.echo("  Installing Python dependencies...")
-        subprocess.run(["pip", "install", "-r", "requirements.txt"], cwd=project_dir, capture_output=True)
+        install_result = subprocess.run(["pip", "install", "-r", "requirements.txt"], cwd=project_dir)
+        if install_result.returncode != 0:
+            click.echo(f"  Python dependency installation failed (exit code {install_result.returncode}).")
+            sys.exit(1)
+        click.echo(f"  Python dependencies installed successfully.")
+    else:
+        click.echo("  Dependencies already installed.")
 
     # 2. Generate .env if missing
     if not (project_dir / ".env").exists():
@@ -429,29 +470,63 @@ def start(name, no_browser):
                 click.echo(f"  Created .env from {template}")
                 break
 
-    # 3. Start service stack
-    stack_results = stack_mod.start_stack(conn, project["id"])
-    if stack_results:
-        for r in stack_results:
-            click.echo(f"  Stack: {r['service']} -> {r['status']}")
-    elif project["run_cmd"]:
-        # Fallback: start directly if no stack detected
-        click.echo(f"  Running: {project['run_cmd']}")
-        res = process.start_process(conn, project["id"], f"{project['name']}-app", project["run_cmd"], project_dir)
-        click.echo(f"  Started (PID: {res['pid']})")
+    # 3. Start infrastructure services (docker, db, redis) in background
+    stack_services = stack_mod.detect_stack(project_dir)
+    infra_services = [s for s in stack_services if s["kind"] != "app"]
+    if infra_services:
+        for svc in infra_services:
+            cmd = svc.get("start_cmd")
+            port = svc.get("port")
+            if port and stack_mod.is_port_open(port):
+                click.echo(f"  Stack: {svc['name']} -> running (port {port} in use)")
+                continue
+            if cmd:
+                if project_id is not None:
+                    res = process.start_process(conn, project_id, svc["name"], cmd, project_dir)
+                    click.echo(f"  Stack: {svc['name']} -> started (PID: {res['pid']})")
+                else:
+                    # CWD mode: start infra without DB tracking
+                    subprocess.Popen(cmd, shell=True, cwd=project_dir,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    click.echo(f"  Stack: {svc['name']} -> started")
+            else:
+                click.echo(f"  Stack: {svc['name']} -> no start command configured")
 
-    # 4. Open browser (Feature #19)
-    if not no_browser:
+    # 4. Run the application interactively in the current terminal
+    if run_cmd:
+        # Duplicate process guard: check if the app port is already in use
         framework = facts.get("framework") or ""
         port = 3000 if "Next" in framework or "React" in framework else 8000
         if stack_mod.is_port_open(port):
-            url = f"http://localhost:{port}"
-            click.echo(f"  Opening browser: {url}")
-            webbrowser.open(url)
+            click.echo(f"  Port {port} is already in use. Another instance may be running.")
+            sys.exit(1)
 
-    db.touch_last_opened(conn, project["id"])
-    db.record_workflow(conn, "start", project["id"], True)
-    click.echo(f"  [OK] '{project['name']}' is ready.")
+        # Open browser in background thread (polls until port is ready)
+        if not no_browser:
+            def _open_browser_when_ready(target_port, timeout=30):
+                for _ in range(timeout * 2):
+                    if stack_mod.is_port_open(target_port):
+                        url = f"http://localhost:{target_port}"
+                        click.echo(f"  Opening browser: {url}")
+                        webbrowser.open(url)
+                        return
+                    time.sleep(0.5)
+            threading.Thread(
+                target=_open_browser_when_ready, args=(port,), daemon=True
+            ).start()
+
+        click.echo(f"  Running: {run_cmd}")
+        try:
+            subprocess.run(run_cmd, shell=True, cwd=project_dir)
+        except KeyboardInterrupt:
+            click.echo("\n  Stopped.")
+    else:
+        click.echo("  No run command detected for this project.")
+
+    # Record workflow in DB (only when project is indexed)
+    if project_id is not None:
+        db.touch_last_opened(conn, project_id)
+        db.record_workflow(conn, "start", project_id, True)
 
 
 # --- Clone ------------------------------------------------------------
