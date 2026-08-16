@@ -1107,6 +1107,212 @@ def release_status_cmd():
     return release_check_cmd(tag=None)
 
 
+# --- Manual Pre-Push Check -------------------------------------------
+@main.command("check")
+@click.option("--verbose", "-v", "check_verbose", is_flag=True, help="Show expanded stage output")
+def check_cmd(check_verbose):
+    """Run the full pre-push Guardian validation pipeline manually.
+
+    Executes the same 16-stage validation that `git push` triggers,
+    with real-time stage-by-stage output. Use this to verify push-safety
+    before actually pushing.
+
+    Usage:
+        nexterm check           Run all 16 Guardian stages
+        nexterm check --verbose Show expanded output per stage
+        check                   (inside the interactive shell)
+    """
+    import time as _time
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.pre_push import (
+        PrePushValidationEngine,
+        StageResult,
+        PrePushReport,
+        write_markdown_report,
+    )
+
+    # Ensure UTF-8 output on Windows (same pattern as pre_push.py)
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    repo_root = Path.cwd()
+    sep = "=" * 59
+
+    # --- Detect branch and commit ---
+    branch = "unknown"
+    commit = "unknown"
+    try:
+        res_b = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_root, capture_output=True, text=True,
+            encoding="utf-8", errors="ignore",
+        )
+        if res_b.returncode == 0:
+            branch = res_b.stdout.strip()
+        res_c = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_root, capture_output=True, text=True,
+            encoding="utf-8", errors="ignore",
+        )
+        if res_c.returncode == 0:
+            commit = res_c.stdout.strip()
+    except Exception:
+        pass
+
+    # --- Header ---
+    click.echo(sep)
+    click.echo("             NEXTERM REPOSITORY GUARDIAN")
+    click.echo(sep)
+    click.echo()
+    click.echo(f"  Repository : {repo_root}")
+    click.echo(f"  Branch     : {branch}")
+    click.echo(f"  Commit     : {commit}")
+    click.echo()
+
+    # --- Initialize engine ---
+    engine = PrePushValidationEngine(repo_root, auto_repair=False)
+
+    # Stage definitions (identical to run_full_pipeline)
+    stage_funcs = [
+        (1, "Repository Audit", engine._stage1_repo_audit),
+        (2, "Dependency Verification", engine._stage2_dep_verification),
+        (3, "Formatting Check", engine._stage3_formatting_check),
+        (4, "Linting Check", engine._stage4_linting_check),
+        (5, "Type Check & Static Analysis", engine._stage5_type_check),
+        (6, "Production Build", engine._stage6_production_build),
+        (7, "Test Suite", engine._stage7_test_suite),
+        (8, "GitHub Actions Parsing", engine._stage8_workflow_parsing),
+        (9, "Workflow Simulation", engine._stage9_workflow_simulation),
+        (10, "Matrix Validation", engine._stage10_matrix_validation),
+        (11, "Failure Investigation", engine._stage11_failure_investigation),
+        (12, "Auto-Repair Engine", engine._stage12_auto_repair),
+        (13, "Security & Secret Scan", engine._stage13_security_secret_scan),
+        (14, "Artifact Inspection", engine._stage14_artifact_inspection),
+        (15, "Git Conflict & Hygiene", engine._stage15_git_validation),
+    ]
+
+    total_stages = len(stage_funcs) + 1  # +1 for Final Decision
+    critical_stages = {1, 2, 4, 6, 7, 13}
+    completed_stages: list[StageResult] = []
+    short_circuited = False
+    start_all = _time.time()
+
+    # --- Run stages with real-time output ---
+    for s_num, s_name, s_fn in stage_funcs:
+        if short_circuited:
+            # Mark remaining stages as skipped
+            skipped = StageResult(s_num, s_name, False, True, 0.0, "Skipped due to earlier critical failure.")
+            completed_stages.append(skipped)
+            click.echo(f"  [{s_num:02d}/{total_stages}] {s_name:<29} ○ SKIP")
+            click.echo(f"           Skipped due to earlier critical failure.")
+            click.echo()
+            continue
+
+        click.echo(f"  [{s_num:02d}/{total_stages}] {s_name}")
+        click.echo(f"           → checking...")
+
+        result = engine._run_stage(s_num, s_name, s_fn)
+        completed_stages.append(result)
+
+        if result.passed:
+            click.echo(f"           ✓ PASS   {result.duration:>5.2f}s")
+        elif result.skipped:
+            click.echo(f"           ○ SKIP   {result.duration:>5.2f}s")
+        else:
+            click.echo(f"           ✗ FAIL   {result.duration:>5.2f}s")
+            click.echo()
+            if result.message:
+                click.echo(f"           Problem:")
+                click.echo(f"           {result.message}")
+            if result.details:
+                click.echo(f"           Details:")
+                for d in result.details[:10]:
+                    click.echo(f"             {d}")
+            if result.remedy:
+                click.echo(f"           Remedy:")
+                click.echo(f"             {result.remedy}")
+
+            if s_num in critical_stages:
+                short_circuited = True
+
+        if check_verbose and result.details and result.passed:
+            for d in result.details[:5]:
+                click.echo(f"           {d}")
+
+        click.echo()
+
+    # --- Stage 16: Final Decision ---
+    s_num = 16
+    s_name = "Final Decision & Report"
+    click.echo(f"  [{s_num:02d}/{total_stages}] {s_name}")
+    click.echo(f"           → evaluating results...")
+
+    final_result = engine._run_stage(s_num, s_name, lambda: engine._stage16_final_decision(completed_stages))
+    completed_stages.append(final_result)
+
+    if final_result.passed:
+        click.echo(f"           ✓ PASS   {final_result.duration:>5.2f}s")
+    else:
+        click.echo(f"           ✗ FAIL   {final_result.duration:>5.2f}s")
+        if final_result.message:
+            click.echo(f"           {final_result.message}")
+
+    click.echo()
+
+    # --- Build report ---
+    total_duration = _time.time() - start_all
+    from nexterm import __version__ as _ver
+    report = PrePushReport(
+        version=_ver,
+        branch=branch,
+        commit=commit,
+        total_duration=total_duration,
+    )
+    report.stages = completed_stages
+
+    # Write markdown report
+    report_path = repo_root / "pre_push_report.md"
+    write_markdown_report(report, report_path)
+
+    # --- Summary ---
+    passed_count = sum(1 for s in completed_stages if s.passed)
+    failed_count = sum(1 for s in completed_stages if not s.passed and not s.skipped)
+    skipped_count = sum(1 for s in completed_stages if s.skipped)
+    failed_stages = [s for s in completed_stages if not s.passed and not s.skipped]
+
+    click.echo(sep)
+    click.echo("             GUARDIAN SUMMARY")
+    click.echo(sep)
+    click.echo()
+    click.echo(f"  ✓ Passed  : {passed_count}")
+    click.echo(f"  ✗ Failed  : {failed_count}")
+    click.echo(f"  ○ Skipped : {skipped_count}")
+    click.echo(f"  Duration  : {total_duration:.2f}s")
+    click.echo()
+
+    if report.all_passed:
+        click.echo("  PUSH SAFETY: READY")
+    else:
+        click.echo("  PUSH SAFETY: BLOCKED")
+        click.echo()
+        if failed_stages:
+            click.echo("  Failed stages:")
+            for fs in failed_stages:
+                click.echo(f"    • {fs.name}")
+
+    click.echo()
+    click.echo(f"  Report:")
+    click.echo(f"    {report_path}")
+    click.echo()
+    click.echo(sep)
+
+    if not report.all_passed:
+        sys.exit(1)
+
+
 # --- Pre-Push Guardian ------------------------------------------------
 @main.group("guardian")
 def guardian_group():

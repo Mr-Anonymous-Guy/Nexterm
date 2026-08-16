@@ -80,7 +80,7 @@ DEFAULT_HISTORY_PATH = db.DEFAULT_DB_DIR / "history"
 DEVOS_TOP_COMMANDS = [
     "scan", "find", "open", "start", "clone", "tag", "doctor", "nl",
     "up", "down", "logs", "stack", "ship", "ai", "ask", "explain",
-    "fix", "repo", "pref", "daemon", "status", "errors", "release", "guardian", "shell", "exit", "quit", "clear",
+    "fix", "repo", "pref", "daemon", "status", "errors", "release", "guardian", "check", "shell", "exit", "quit", "clear",
 ]
 
 PROJECT_COMMANDS = {
